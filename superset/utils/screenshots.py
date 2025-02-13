@@ -190,7 +190,7 @@ class BaseScreenshot:
         img_bytes: bytes,
         output: str = "png",
         thumb_size: WindowSize | None = None,
-        crop: bool = True,
+        crop: bool = False,
     ) -> bytes:
         thumb_size = thumb_size or cls.thumb_size
         img = Image.open(BytesIO(img_bytes))

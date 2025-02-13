@@ -254,8 +254,8 @@ class WebDriverSelenium(WebDriverProxy):
         elif self._driver_type == "chrome":
             driver_class = chrome.webdriver.WebDriver
             options = chrome.options.Options()
-            options.add_argument(f"--force-device-scale-factor={pixel_density}")
-            options.add_argument(f"--window-size={self._window[0]},{self._window[1]}")
+            # options.add_argument(f"--force-device-scale-factor={pixel_density}")
+            # options.add_argument(f"--window-size={self._window[0]},{self._window[1]}")
             kwargs = {"options": options}
         else:
             raise Exception(  # pylint: disable=broad-exception-raised
@@ -352,12 +352,17 @@ class WebDriverSelenium(WebDriverProxy):
 
     def get_screenshot(self, url: str, element_name: str, user: User) -> bytes | None:
         driver = self.auth(user)
-        driver.set_window_size(*self._window)
+        # driver.set_window_size(*self._window)
         driver.get(url)
         img: bytes | None = None
         selenium_headstart = current_app.config["SCREENSHOT_SELENIUM_HEADSTART"]
         logger.debug("Sleeping for %i seconds", selenium_headstart)
         sleep(selenium_headstart)
+
+        #接下来是全屏的关键，用js获取页面的宽高，如果有其他需要用js的部分也可以用这个方法
+        height = driver.execute_script("return document.documentElement.scrollHeight")
+        driver.set_window_size(self._window[0], height)
+
 
         try:
             try:
