@@ -1,0 +1,165 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+######################################################################
+# 第一阶段：Node 构建阶段 - 用于构建前端静态资源
+######################################################################
+ARG PY_VER=3.9-slim-bookworm
+
+# if BUILDPLATFORM is null, set it to 'amd64' (or leave as is otherwise).
+ARG BUILDPLATFORM=${BUILDPLATFORM:-amd64}
+FROM --platform=${BUILDPLATFORM} node:16-bookworm-slim AS superset-node
+
+# 设置 npm 构建命令
+ARG NPM_BUILD_CMD="build"
+
+# 安装必要的构建依赖
+RUN apt-get update -qq \
+    && apt-get install -yqq --no-install-recommends \
+        build-essential \
+        python3
+
+# 设置环境变量
+ENV BUILD_CMD=${NPM_BUILD_CMD} \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
+# 设置工作目录
+WORKDIR /app/superset-frontend
+
+# 运行内存检查脚本
+RUN --mount=type=bind,target=/frontend-mem-nag.sh,src=./docker/frontend-mem-nag.sh \
+    /frontend-mem-nag.sh
+
+# 安装 npm 依赖
+RUN --mount=type=bind,target=./package.json,src=./superset-frontend/package.json \
+    --mount=type=bind,target=./package-lock.json,src=./superset-frontend/package-lock.json \
+    npm ci
+
+# 复制前端源代码
+COPY ./superset-frontend ./
+# 构建前端资源
+RUN npm run ${BUILD_CMD}
+
+######################################################################
+# 第二阶段：基础镜像 - 包含所有必要的依赖和配置
+######################################################################
+FROM python:${PY_VER} AS lean
+
+# 设置工作目录
+WORKDIR /app
+
+# 设置环境变量
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    SUPERSET_ENV=production \
+    FLASK_APP="superset.app:create_app()" \
+    PYTHONPATH="/app/pythonpath" \
+    SUPERSET_HOME="/app/superset_home" \
+    SUPERSET_PORT=8088
+
+# 创建必要的目录和用户
+RUN mkdir -p ${PYTHONPATH} superset/static superset-frontend apache_superset.egg-info requirements \
+    && useradd --user-group -d ${SUPERSET_HOME} -m --no-log-init --shell /bin/bash superset \
+    && apt-get update -qq && apt-get install -yqq --no-install-recommends \
+        build-essential \
+        curl \
+        default-libmysqlclient-dev \
+        libsasl2-dev \
+        libsasl2-modules-gssapi-mit \
+        libpq-dev \
+        libecpg-dev \
+        libldap2-dev \
+    && touch superset/static/version_info.json \
+    && chown -R superset:superset ./* \
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制必要的配置文件
+COPY --chown=superset:superset setup.py MANIFEST.in README.md ./
+# 复制 package.json 用于版本信息
+COPY --chown=superset:superset superset-frontend/package.json superset-frontend/
+
+# 安装 Python 依赖
+RUN --mount=type=bind,target=./requirements/local.txt,src=./requirements/local.txt \
+    --mount=type=bind,target=./requirements/development.txt,src=./requirements/development.txt \
+    --mount=type=bind,target=./requirements/base.txt,src=./requirements/base.txt \
+    --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements/local.txt
+
+# 从前端构建阶段复制静态资源
+COPY --chown=superset:superset --from=superset-node /app/superset/static/assets superset/static/assets
+
+# 复制 Superset 源代码并安装
+COPY --chown=superset:superset superset superset
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -e . \
+    && flask fab babel-compile --target superset/translations \
+    && chown -R superset:superset superset/translations
+
+# 复制并设置启动脚本权限
+COPY --chmod=755 ./docker/run-server.sh /usr/bin/
+
+# 切换到 superset 用户
+USER superset
+
+# 设置健康检查
+HEALTHCHECK CMD curl -f "http://localhost:${SUPERSET_PORT}/health"
+
+# 暴露端口
+EXPOSE ${SUPERSET_PORT}
+
+# 设置默认启动命令
+CMD ["/usr/bin/run-server.sh"]
+
+
+######################################################################
+# 第三阶段：Chrome 环境镜像 - 基于基础镜像添加Chrome浏览器支持
+######################################################################
+FROM lean AS chrome
+
+# 切换到 root 用户以安装 Chrome 相关组件
+USER root
+
+# 安装Chrome和ChromeDriver所需的依赖
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libaio1 \
+        libnss3 \
+        libatk-bridge2.0-0 \
+        libdrm2 \
+        libxkbcommon0 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxrandr2 \
+        libgbm1 \
+        libxss1 \
+        libasound2 \
+        libatspi2.0-0 \
+        libgtk-3-0 \
+        libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
+
+# 复制并安装本地的 Google Chrome DEB 包
+COPY google-chrome-stable_current_amd64.deb /tmp/
+RUN dpkg -i /tmp/google-chrome-stable_current_amd64.deb || apt-get update && apt-get install -f -y && \
+    rm -f /tmp/google-chrome-stable_current_amd64.deb
+
+# 复制本地的 ChromeDriver
+COPY chromedriver /usr/bin/chromedriver
+RUN chmod 755 /usr/bin/chromedriver
+
+# 切换回 superset 用户
+USER superset

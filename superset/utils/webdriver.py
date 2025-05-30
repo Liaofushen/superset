@@ -352,6 +352,7 @@ class WebDriverSelenium(WebDriverProxy):
 
     def get_screenshot(self, url: str, element_name: str, user: User) -> bytes | None:
         driver = self.auth(user)
+        # 屏蔽预设的窗口配置
         # driver.set_window_size(*self._window)
         driver.get(url)
         img: bytes | None = None
@@ -361,6 +362,7 @@ class WebDriverSelenium(WebDriverProxy):
 
         #接下来是全屏的关键，用js获取页面的宽高，如果有其他需要用js的部分也可以用这个方法
         height = driver.execute_script("return document.documentElement.scrollHeight")
+        height += int(height * 0.1)
         driver.set_window_size(self._window[0], height)
 
 

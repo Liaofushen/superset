@@ -109,5 +109,9 @@ release.json
 messages.mo
 
 docker/requirements-local.txt
+docker/.env-prod
 
 cache/
+
+chromedriver
+google-chrome-stable_current_amd64.deb
